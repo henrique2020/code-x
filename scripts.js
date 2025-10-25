@@ -22,6 +22,23 @@ $(document).ready(function() {
 });
 
 /**
+ * Normaliza nomes de linguagens/pastas para uso em IDs e atributos (remove caracteres inválidos).
+ * Também mapeia casos especiais como "C++" para "cpp".
+ * Retorna uma chave em lowercase (ex: 'cpp', 'javascript').
+ */
+function normalizeLanguageKey(name) {
+    if (!name) return '';
+    const lower = name.toLowerCase().trim();
+
+    // Mapeamentos especiais
+    if (lower === 'c++') return 'cpp';
+    if (lower === 'c#') return 'csharp';
+
+    // Remove todos os caracteres que não sejam alfanuméricos ou underscore
+    return lower.replace(/[^\w]/g, '');
+}
+
+/**
  * Constrói o menu sanfona (accordion) com a lógica de agrupamento.
  * @param {Array} directoriesData - Os dados das pastas e arquivos.
  */
@@ -42,21 +59,24 @@ function buildAccordionMenu(directoriesData) {
         const fileCount = dir.files.length;
         let contentHtml;
 
+        // Normaliza o nome para uso em IDs/atributos (ex: 'C++' -> 'cpp')
+        const langKey = normalizeLanguageKey(dir.name);
+
         // Lógica de Agrupamento
         if (fileCount > 50) {
-            contentHtml = createGroupedList(dir.files, 50, dir.name); // Grupos de 50
+            contentHtml = createGroupedList(dir.files, 50, langKey, dir.name); // Grupos de 50
         } else if (fileCount >= 15) {
-            contentHtml = createGroupedList(dir.files, 15, dir.name); // Grupos de 15
+            contentHtml = createGroupedList(dir.files, 15, langKey, dir.name); // Grupos de 15
         } else {
             contentHtml = createDirectList(dir.files); // Lista direta
         }
 
         const accordionItemHtml = `
-            <div class="accordion-item" data-language-name="${dir.name.toLowerCase()}">
+            <div class="accordion-item" data-language-name="${langKey}">
                 <h2 class="accordion-header">
-                    <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-${dir.name}">${dir.name}</button>
+                    <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-${langKey}">${dir.name}</button>
                 </h2>
-                <div id="collapse-${dir.name}" class="accordion-collapse collapse" data-bs-parent="#language-navigation">
+                <div id="collapse-${langKey}" class="accordion-collapse collapse" data-bs-parent="#language-navigation">
                     ${contentHtml}
                 </div>
             </div>`;
@@ -77,9 +97,12 @@ function createDirectList(files) {
 
 /**
  * Cria uma lista agrupada (sub-accordion).
+ * parentKey: chave segura (normalizada) para uso em IDs.
+ * parentDisplayName: nome original para exibição (opcional)
  */
-function createGroupedList(files, groupSize, parentName) {
-    let subAccordionHtml = '<div class="accordion-body p-0"><div class="accordion" id="sub-accordion-' + parentName + '">';
+function createGroupedList(files, groupSize, parentKey, parentDisplayName) {
+    const subAccordionId = `sub-accordion-${parentKey || parentDisplayName || Math.random().toString(36).slice(2)}`;
+    let subAccordionHtml = `<div class="accordion-body p-0"><div class="accordion" id="${subAccordionId}">`;
     for (let i = 0; i < files.length; i += groupSize) {
         const chunk = files.slice(i, i + groupSize);
         const groupName = `${chunk[0].number} - ${chunk[chunk.length - 1].number}`;
@@ -88,11 +111,11 @@ function createGroupedList(files, groupSize, parentName) {
         subAccordionHtml += `
             <div class="accordion-item" data-group-container>
                 <h2 class="accordion-header">
-                    <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-group-${parentName}-${i}">
+                    <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-group-${parentKey}-${i}">
                         ${groupName}
                     </button>
                 </h2>
-                <div id="collapse-group-${parentName}-${i}" class="accordion-collapse collapse" data-bs-parent="#sub-accordion-${parentName}">
+                <div id="collapse-group-${parentKey}-${i}" class="accordion-collapse collapse" data-bs-parent="#${subAccordionId}">
                     ${chunkListHtml}
                 </div>
             </div>`;
@@ -214,7 +237,16 @@ function decodeBase64(base64) {
 
 function getLanguageFromPath(filePath) {
     const ext = filePath.split('.').pop().toLowerCase();
-    const map = { 'c': 'c', 'java': 'java', 'php': 'php', 'js': 'javascript', 'py': 'python', 'sql': 'sql' };
+    // Adiciona mapeamentos para extensões C++ comuns
+    const map = {
+        'c': 'c',
+        'cpp': 'cpp',
+        'java': 'java',
+        'php': 'php',
+        'js': 'javascript',
+        'py': 'python',
+        'sql': 'sql'
+    };
     return map[ext] || 'plaintext';
 }
 
