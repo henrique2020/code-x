@@ -3,7 +3,7 @@
  * Responsável por buscar a estrutura do repositório e o conteúdo dos arquivos.
  */
 const GitHubAPI = {
-    repoApiUrl: 'https://api.github.com/repos/henrique2020/URI/contents',
+    repoApiUrl: 'https://api.github.com/repos/henrique2020/maratonas/contents',
 
     /**
      * Busca a estrutura de diretórios de forma recursiva.
