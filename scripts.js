@@ -1,5 +1,5 @@
 /**
- * Gerenciamento de Cache de arquivos para evitar requisições repetidas.
+ * Gerenciamento de Cache Local.
  */
 const AppCache = {
     storage: {},
@@ -9,7 +9,7 @@ const AppCache = {
 };
 
 /**
- * Utilitários de processamento de texto e dados.
+ * Utilitários e Processamento.
  */
 const Utils = {
     normalizeKey(name) {
@@ -21,12 +21,16 @@ const Utils = {
     },
 
     getPrismLanguage(filePath) {
-        const ext = filePath.split('.').pop().toLowerCase();
+        const parts = filePath.split('.');
+        if (parts.length === 1) return 'plaintext';
+
+        const ext = parts.pop().toLowerCase();
         const map = { 
             'js': 'javascript', 
-            'py': 'python'
+            'py': 'python' 
         };
-        return map[ext] || ext || 'plaintext';
+        
+        return map[ext] || ext;
     },
 
     decodeBase64(base64) {
@@ -40,7 +44,7 @@ const Utils = {
 };
 
 /**
- * Controle da Interface do Usuário (DOM).
+ * Controle da Interface (UI).
  */
 const UI = {
     elements: {
@@ -59,7 +63,7 @@ const UI = {
         data.forEach(dir => {
             if (dir.files.length === 0) return;
 
-            // Ordenação numérica dos arquivos
+           // Ordenação numérica dos arquivos
             dir.files.forEach(f => {
                 const match = f.name.match(/\d+/);
                 f.number = match ? parseInt(match[0], 10) : 0;
@@ -74,7 +78,7 @@ const UI = {
                               count >= 15 ? this.createGroupedList(dir.files, 15, key) :
                               this.createDirectList(dir.files);
 
-            const accordionHtml = `
+            const html = `
                 <div class="accordion-item" data-language-name="${key}">
                     <h2 class="accordion-header">
                         <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-${key}">
@@ -85,7 +89,7 @@ const UI = {
                         ${listContent}
                     </div>
                 </div>`;
-            this.elements.nav.append(accordionHtml);
+            this.elements.nav.append(html);
         });
     },
 
@@ -101,12 +105,12 @@ const UI = {
         let html = `<div class="accordion-body p-0"><div class="accordion" id="sub-${key}">`;
         for (let i = 0; i < files.length; i += size) {
             const chunk = files.slice(i, i + size);
-            const groupName = `${chunk[0].number} - ${chunk[chunk.length - 1].number}`;
+            const groupLabel = `${chunk[0].number} - ${chunk[chunk.length - 1].number}`;
             html += `
                 <div class="accordion-item" data-group-container>
                     <h2 class="accordion-header">
                         <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#group-${key}-${i}">
-                            ${groupName}
+                            ${groupLabel}
                         </button>
                     </h2>
                     <div id="group-${key}-${i}" class="accordion-collapse collapse" data-bs-parent="#sub-${key}">
@@ -117,14 +121,14 @@ const UI = {
         return html + '</div></div>';
     },
 
-    updateCodeDisplay(content, lang) {
+    updateCode(content, lang) {
         this.elements.codeArea.text(content).attr('class', `language-${lang} line-numbers`);
         Prism.highlightElement(this.elements.codeArea[0]);
     }
 };
 
 /**
- * Orquestrador da Aplicação.
+ * Orquestrador (App).
  */
 const App = {
     async init() {
@@ -132,10 +136,9 @@ const App = {
         try {
             AppCache.allData = await GitHubAPI.fetchRepoStructure();
             UI.renderMenu(AppCache.allData);
-            
             UI.elements.search.on('keyup', (e) => this.filter($(e.target).val().toLowerCase()));
         } catch (err) {
-            UI.elements.nav.html('<p class="text-danger p-3">Erro ao conectar com o GitHub.</p>');
+            UI.elements.nav.html('<p class="text-danger p-3">Erro de conexão.</p>');
         }
     },
 
@@ -143,20 +146,20 @@ const App = {
         const cached = AppCache.getFile(path);
         if (cached) {
             console.debug(`[App] Carregando do cache: ${path}`);
-            UI.updateCodeDisplay(cached.content, cached.lang);
+            UI.updateCode(cached.content, cached.lang);
             return;
         }
 
-        UI.elements.codeArea.text('Buscando código...');
+        UI.elements.codeArea.text('Carregando...');
         try {
             const data = await GitHubAPI.fetchFileContent(path);
             const decoded = Utils.decodeBase64(data.content);
             const lang = Utils.getPrismLanguage(data.path);
             
             AppCache.saveFile(path, { content: decoded, lang: lang });
-            UI.updateCodeDisplay(decoded, lang);
+            UI.updateCode(decoded, lang);
         } catch (err) {
-            UI.updateCodeDisplay('Erro ao carregar o arquivo.', 'plaintext');
+            UI.updateCode('Erro ao carregar o arquivo.', 'plaintext');
         }
     },
 
@@ -167,29 +170,45 @@ const App = {
             return;
         }
 
-        $('#language-navigation > .accordion-item').each(function() {
+        $('#language-navigation > .accordion-item[data-language-name]').each(function() {
             const container = $(this);
-            let hasMatch = false;
+            let languageHasVisibleMatch = false;
 
-            container.find('.conversation-item').each(function() {
-                const item = $(this);
-                const match = item.data('exercise-name').toString().includes(term);
-                item.toggle(match);
-                if (match) hasMatch = true;
-            });
-
-            // Ajusta visibilidade de subgrupos
+            // 1. Filtragem nos subgrupos
             container.find('div[data-group-container]').each(function() {
                 const group = $(this);
-                const groupHasMatch = group.find('.conversation-item:visible').length > 0;
+                let groupHasMatch = false;
+
+                group.find('.conversation-item').each(function() {
+                    const item = $(this);
+                    const exerciseName = item.data('exercise-name');
+                    const match = typeof exerciseName === 'string' && exerciseName.includes(term);
+                    
+                    item.toggle(match);
+                    if (match) groupHasMatch = true;
+                });
+
                 group.toggle(groupHasMatch);
+                if (groupHasMatch) languageHasVisibleMatch = true;
             });
 
-            container.toggle(hasMatch);
-            if (hasMatch) container.find('.accordion-collapse').collapse('show');
+            // 2. Filtragem em listas diretas (sem subgrupos)
+            container.children('.accordion-collapse').children('.accordion-body').find('ul > .conversation-item').each(function() {
+                const item = $(this);
+                if (item.closest('div[data-group-container]').length === 0) {
+                    const exerciseName = item.data('exercise-name');
+                    const match = typeof exerciseName === 'string' && exerciseName.includes(term);
+                    
+                    item.toggle(match);
+                    if (match) languageHasVisibleMatch = true;
+                }
+            });
+
+            container.toggle(languageHasVisibleMatch);
         });
+
+        $('.accordion-item:visible > .accordion-collapse').collapse('show');
     }
 };
 
-// Inicialização
 $(document).ready(() => App.init());
