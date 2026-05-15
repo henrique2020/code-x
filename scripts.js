@@ -1,256 +1,195 @@
-// Objeto que funcionará como cache para armazenar o conteúdo dos arquivos
-const fileCache = {};
-let allFilesData = []; // Armazena a estrutura de todos os arquivos para a pesquisa
-
-$(document).ready(function() {
-    const navContainer = $('#language-navigation');
-    navContainer.html('<p class="text-white">Carregando estrutura do repositório...</p>');
-
-    // Chama a função da API para buscar a estrutura
-    fetchRepoStructure()
-        .then(directoriesData => {
-            allFilesData = directoriesData; // Salva os dados para a pesquisa
-            buildAccordionMenu(allFilesData); // Constrói o menu com os dados recebidos
-        })
-        .catch(handleError);
-
-    // Evento para a barra de pesquisa
-    $('#search-box').on('keyup', function() {
-        const searchTerm = $(this).val().toLowerCase();
-        filterExercises(searchTerm);
-    });
-});
+/**
+ * Gerenciamento de Cache de arquivos para evitar requisições repetidas.
+ */
+const AppCache = {
+    storage: {},
+    allData: [],
+    saveFile(path, data) { this.storage[path] = data; },
+    getFile(path) { return this.storage[path]; }
+};
 
 /**
- * Normaliza nomes de linguagens/pastas para uso em IDs e atributos (remove caracteres inválidos).
- * Também mapeia casos especiais como "C++" para "cpp".
- * Retorna uma chave em lowercase (ex: 'cpp', 'javascript').
+ * Utilitários de processamento de texto e dados.
  */
-function normalizeLanguageKey(name) {
-    if (!name) return '';
-    const lower = name.toLowerCase().trim();
+const Utils = {
+    normalizeKey(name) {
+        if (!name) return '';
+        const lower = name.toLowerCase().trim();
+        if (lower === 'c++') return 'cpp';
+        if (lower === 'c#') return 'csharp';
+        return lower.replace(/[^\w]/g, '');
+    },
 
-    // Mapeamentos especiais
-    if (lower === 'c++') return 'cpp';
-    if (lower === 'c#') return 'csharp';
+    getPrismLanguage(filePath) {
+        const ext = filePath.split('.').pop().toLowerCase();
+        const map = { 
+            'js': 'javascript', 
+            'py': 'python'
+        };
+        return map[ext] || ext || 'plaintext';
+    },
 
-    // Remove todos os caracteres que não sejam alfanuméricos ou underscore
-    return lower.replace(/[^\w]/g, '');
-}
+    decodeBase64(base64) {
+        const binaryString = atob(base64.replace(/\s/g, ''));
+        const bytes = new Uint8Array(binaryString.length);
+        for (let i = 0; i < binaryString.length; i++) {
+            bytes[i] = binaryString.charCodeAt(i);
+        }
+        return new TextDecoder().decode(bytes);
+    }
+};
 
 /**
- * Constrói o menu sanfona (accordion) com a lógica de agrupamento.
- * @param {Array} directoriesData - Os dados das pastas e arquivos.
+ * Controle da Interface do Usuário (DOM).
  */
-function buildAccordionMenu(directoriesData) {
-    const navContainer = $('#language-navigation');
-    navContainer.empty(); // Limpa o menu antes de reconstruir
+const UI = {
+    elements: {
+        nav: $('#language-navigation'),
+        search: $('#search-box'),
+        codeArea: $('#code-content')
+    },
 
-    directoriesData.forEach(dir => {
-        if (dir.files.length === 0) return;
+    /**
+     * Renderiza o menu principal.
+     */
+    renderMenu(data) {
+        console.log("[UI] Renderizando menu lateral...");
+        this.elements.nav.empty();
 
-        // Extrai o número do nome do arquivo para ordenação numérica
-        dir.files.forEach(file => {
-            const match = file.name.match(/\d+/);
-            file.number = match ? parseInt(match[0], 10) : 0;
+        data.forEach(dir => {
+            if (dir.files.length === 0) return;
+
+            // Ordenação numérica dos arquivos
+            dir.files.forEach(f => {
+                const match = f.name.match(/\d+/);
+                f.number = match ? parseInt(match[0], 10) : 0;
+            });
+            dir.files.sort((a, b) => a.number - b.number);
+
+            const count = dir.files.length;
+            const key = Utils.normalizeKey(dir.name);
+            const label = `${dir.name} (${count})`;
+
+            let listContent = count > 50 ? this.createGroupedList(dir.files, 50, key) :
+                              count >= 15 ? this.createGroupedList(dir.files, 15, key) :
+                              this.createDirectList(dir.files);
+
+            const accordionHtml = `
+                <div class="accordion-item" data-language-name="${key}">
+                    <h2 class="accordion-header">
+                        <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-${key}">
+                            ${label}
+                        </button>
+                    </h2>
+                    <div id="collapse-${key}" class="accordion-collapse collapse" data-bs-parent="#language-navigation">
+                        ${listContent}
+                    </div>
+                </div>`;
+            this.elements.nav.append(accordionHtml);
         });
-        dir.files.sort((a, b) => a.number - b.number);
+    },
 
-        const fileCount = dir.files.length;
-        let contentHtml;
+    createDirectList(files) {
+        const items = files.map(f => `
+            <li class="list-group-item conversation-item" data-exercise-name="${f.name.toLowerCase()}" onclick="App.loadCode('${f.path}')">
+                ${f.name.replace(/\.[^/.]+$/, "")}
+            </li>`).join('');
+        return `<div class="accordion-body p-0"><ul class="list-group list-group-flush">${items}</ul></div>`;
+    },
 
-        // Normaliza o nome para uso em IDs/atributos (ex: 'C++' -> 'cpp')
-        const langKey = normalizeLanguageKey(dir.name);
+    createGroupedList(files, size, key) {
+        let html = `<div class="accordion-body p-0"><div class="accordion" id="sub-${key}">`;
+        for (let i = 0; i < files.length; i += size) {
+            const chunk = files.slice(i, i + size);
+            const groupName = `${chunk[0].number} - ${chunk[chunk.length - 1].number}`;
+            html += `
+                <div class="accordion-item" data-group-container>
+                    <h2 class="accordion-header">
+                        <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#group-${key}-${i}">
+                            ${groupName}
+                        </button>
+                    </h2>
+                    <div id="group-${key}-${i}" class="accordion-collapse collapse" data-bs-parent="#sub-${key}">
+                        ${this.createDirectList(chunk)}
+                    </div>
+                </div>`;
+        }
+        return html + '</div></div>';
+    },
 
-        // Lógica de Agrupamento
-        if (fileCount > 50) {
-            contentHtml = createGroupedList(dir.files, 50, langKey, dir.name); // Grupos de 50
-        } else if (fileCount >= 15) {
-            contentHtml = createGroupedList(dir.files, 15, langKey, dir.name); // Grupos de 15
-        } else {
-            contentHtml = createDirectList(dir.files); // Lista direta
+    updateCodeDisplay(content, lang) {
+        this.elements.codeArea.text(content).attr('class', `language-${lang} line-numbers`);
+        Prism.highlightElement(this.elements.codeArea[0]);
+    }
+};
+
+/**
+ * Orquestrador da Aplicação.
+ */
+const App = {
+    async init() {
+        console.info("[App] Inicializando sistema...");
+        try {
+            AppCache.allData = await GitHubAPI.fetchRepoStructure();
+            UI.renderMenu(AppCache.allData);
+            
+            UI.elements.search.on('keyup', (e) => this.filter($(e.target).val().toLowerCase()));
+        } catch (err) {
+            UI.elements.nav.html('<p class="text-danger p-3">Erro ao conectar com o GitHub.</p>');
+        }
+    },
+
+    async loadCode(path) {
+        const cached = AppCache.getFile(path);
+        if (cached) {
+            console.debug(`[App] Carregando do cache: ${path}`);
+            UI.updateCodeDisplay(cached.content, cached.lang);
+            return;
         }
 
-        const accordionItemHtml = `
-            <div class="accordion-item" data-language-name="${langKey}">
-                <h2 class="accordion-header">
-                    <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-${langKey}">${dir.name}</button>
-                </h2>
-                <div id="collapse-${langKey}" class="accordion-collapse collapse" data-bs-parent="#language-navigation">
-                    ${contentHtml}
-                </div>
-            </div>`;
-        navContainer.append(accordionItemHtml);
-    });
-}
+        UI.elements.codeArea.text('Buscando código...');
+        try {
+            const data = await GitHubAPI.fetchFileContent(path);
+            const decoded = Utils.decodeBase64(data.content);
+            const lang = Utils.getPrismLanguage(data.path);
+            
+            AppCache.saveFile(path, { content: decoded, lang: lang });
+            UI.updateCodeDisplay(decoded, lang);
+        } catch (err) {
+            UI.updateCodeDisplay('Erro ao carregar o arquivo.', 'plaintext');
+        }
+    },
 
-/**
- * Cria uma lista direta de arquivos.
- */
-function createDirectList(files) {
-    const fileListHtml = files.map(file => `
-        <li class="list-group-item conversation-item" data-exercise-name="${file.name.toLowerCase()}" onclick="loadCodeFile('${file.path}')">
-            ${file.name.replace(/\.[^/.]+$/, "")}
-        </li>`).join('');
-    return `<div class="accordion-body p-0"><ul class="list-group list-group-flush">${fileListHtml}</ul></div>`;
-}
+    filter(term) {
+        if (!term) {
+            $('.accordion-item, .conversation-item, div[data-group-container]').show();
+            $('.accordion-collapse').collapse('hide');
+            return;
+        }
 
-/**
- * Cria uma lista agrupada (sub-accordion).
- * parentKey: chave segura (normalizada) para uso em IDs.
- * parentDisplayName: nome original para exibição (opcional)
- */
-function createGroupedList(files, groupSize, parentKey, parentDisplayName) {
-    const subAccordionId = `sub-accordion-${parentKey || parentDisplayName || Math.random().toString(36).slice(2)}`;
-    let subAccordionHtml = `<div class="accordion-body p-0"><div class="accordion" id="${subAccordionId}">`;
-    for (let i = 0; i < files.length; i += groupSize) {
-        const chunk = files.slice(i, i + groupSize);
-        const groupName = `${chunk[0].number} - ${chunk[chunk.length - 1].number}`;
-        const chunkListHtml = createDirectList(chunk);
+        $('#language-navigation > .accordion-item').each(function() {
+            const container = $(this);
+            let hasMatch = false;
 
-        subAccordionHtml += `
-            <div class="accordion-item" data-group-container>
-                <h2 class="accordion-header">
-                    <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-group-${parentKey}-${i}">
-                        ${groupName}
-                    </button>
-                </h2>
-                <div id="collapse-group-${parentKey}-${i}" class="accordion-collapse collapse" data-bs-parent="#${subAccordionId}">
-                    ${chunkListHtml}
-                </div>
-            </div>`;
-    }
-    subAccordionHtml += '</div></div>';
-    return subAccordionHtml;
-}
-
-/**
- * Filtra os exercícios com base no termo de pesquisa.
- */
-function filterExercises(searchTerm) {
-    // Se a pesquisa estiver vazia, restaura a lista para o estado inicial.
-    if (!searchTerm) {
-        $('#language-navigation .accordion-item').show();
-        $('#language-navigation .conversation-item').show();
-        $('#language-navigation .accordion-collapse').collapse('hide');
-        return;
-    }
-
-    // Itera por cada linguagem para decidir se deve ser visível
-    $('#language-navigation > .accordion-item[data-language-name]').each(function() {
-        const languageContainer = $(this);
-        let languageHasVisibleMatch = false;
-
-        // Lida com exercícios que estão dentro de subgrupos
-        languageContainer.find('div[data-group-container]').each(function() {
-            const subGroupContainer = $(this);
-            let subGroupHasVisibleMatch = false;
-
-            subGroupContainer.find('.conversation-item').each(function() {
-                const exerciseItem = $(this);
-                const exerciseName = exerciseItem.data('exercise-name');
-
-                if (typeof exerciseName === 'string' && exerciseName.includes(searchTerm)) {
-                    exerciseItem.show();
-                    subGroupHasVisibleMatch = true;
-                } else {
-                    exerciseItem.hide();
-                }
+            container.find('.conversation-item').each(function() {
+                const item = $(this);
+                const match = item.data('exercise-name').toString().includes(term);
+                item.toggle(match);
+                if (match) hasMatch = true;
             });
 
-            subGroupContainer.toggle(subGroupHasVisibleMatch);
-            if (subGroupHasVisibleMatch) {
-                languageHasVisibleMatch = true;
-            }
+            // Ajusta visibilidade de subgrupos
+            container.find('div[data-group-container]').each(function() {
+                const group = $(this);
+                const groupHasMatch = group.find('.conversation-item:visible').length > 0;
+                group.toggle(groupHasMatch);
+            });
+
+            container.toggle(hasMatch);
+            if (hasMatch) container.find('.accordion-collapse').collapse('show');
         });
-
-        // Lida com exercícios que estão em listas diretas (sem subgrupos)
-        languageContainer.children('.accordion-collapse').children('.accordion-body').find('ul > .conversation-item').each(function() {
-            const exerciseItem = $(this);
-            if (exerciseItem.closest('div[data-group-container]').length === 0) {
-                const exerciseName = exerciseItem.data('exercise-name');
-                if (typeof exerciseName === 'string' && exerciseName.includes(searchTerm)) {
-                    exerciseItem.show();
-                    languageHasVisibleMatch = true;
-                } else {
-                    exerciseItem.hide();
-                }
-            }
-        });
-        
-        languageContainer.toggle(languageHasVisibleMatch);
-    });
-
-    $('.accordion-item:visible > .accordion-collapse').collapse('show');
-}
-
-/**
- * Carrega o código de um arquivo.
- */
-function loadCodeFile(filePath) {
-    if (fileCache[filePath]) {
-        const { language, content } = fileCache[filePath];
-        displayCode(language, content);
-        return;
     }
+};
 
-    const codeElement = document.getElementById('code-content');
-    codeElement.textContent = 'Carregando código...';
-    Prism.highlightElement(codeElement);
-    
-    // Chama a função da API para buscar o conteúdo do arquivo
-    fetchFileContent(filePath)
-        .done(fileData => {
-            if (fileData.content) {
-                const decodedContent = decodeBase64(fileData.content);
-                const language = getLanguageFromPath(fileData.path);
-                fileCache[filePath] = { language, content: decodedContent };
-                displayCode(language, decodedContent);
-            }
-        })
-        .fail(() => {
-            displayCode('plaintext', `Erro ao carregar o arquivo: ${filePath}. Tente novamente.`);
-        });
-}
-
-// --- Funções Utilitárias ---
-function displayCode(language, codeContent) {
-    const codeElement = document.getElementById('code-content');
-    codeElement.textContent = codeContent;
-    codeElement.className = `language-${language} line-numbers`;
-    Prism.highlightElement(codeElement);
-}
-
-function copyToClipboard() {
-    navigator.clipboard.writeText(document.getElementById('code-content').textContent);
-}
-
-function decodeBase64(base64) {
-    const binaryString = atob(base64.replace(/\s/g, ''));
-    const len = binaryString.length;
-    const bytes = new Uint8Array(len);
-    for (let i = 0; i < len; i++) {
-        bytes[i] = binaryString.charCodeAt(i);
-    }
-    return new TextDecoder().decode(bytes);
-}
-
-function getLanguageFromPath(filePath) {
-    const ext = filePath.split('.').pop().toLowerCase();
-    // Adiciona mapeamentos para extensões C++ comuns
-    const map = {
-        'c': 'c',
-        'cpp': 'cpp',
-        'java': 'java',
-        'php': 'php',
-        'js': 'javascript',
-        'py': 'python',
-        'sql': 'sql'
-    };
-    return map[ext] || 'plaintext';
-}
-
-function handleError(error) {
-    console.error("Ocorreu um erro:", error);
-    $('#language-navigation').html('<p class="text-danger">Não foi possível carregar os dados do repositório.</p>');
-}
+// Inicialização
+$(document).ready(() => App.init());
